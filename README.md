@@ -1,5 +1,8 @@
 # Uncharted: The Nathan Drake Collection for Windows
 
+**Linux: this fork also builds and runs on Linux — see [LINUX.md](LINUX.md) for the packages,
+build steps and troubleshooting.**
+
 **Uncharted 1, 2 and 3 from the PS4 collection running natively on Windows 10 and 11, by [SuperMedo](https://github.com/Supermedo).** Mohammed Albarghouthi
 
 Same idea as my [Bloodborne port](https://github.com/Supermedo/bloodborne_pc): the original PS4 game

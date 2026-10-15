@@ -10,7 +10,8 @@ controls, and the new display mode, which is available on both systems).
 
 | File | Change |
 |---|---|
-| `gpu/CMakeLists.txt` | miniupnpc is found and linked on every platform (UPnP is not Windows-only), and the `xbyak` include directory is set for every platform (the shader recompiler needs it on Linux too). |
+| `gpu/CMakeLists.txt` | miniupnpc is found and linked on every platform (UPnP is not Windows-only), and the `xbyak` include directory is set for every platform (the shader recompiler needs it on Linux too). Vulkan Memory Allocator is looked up in the vendored copy first and then in the system, with an error that names both. |
+| `gpu/third_party/vma/include/vk_mem_alloc.h` | The Vulkan Memory Allocator 3.x header (MIT) is vendored: no Linux distribution in the official repositories ships it on every release, and without it the GPU library cannot be configured. A system package still wins when it is installed. |
 | `gpu/shadps4/video_core/renderer_vulkan/vk_scheduler.cpp` | Linux equivalents of the Windows diagnostics: `gettid()`, `backtrace()` and `dladdr()` instead of `GetCurrentThreadId()`, `CaptureStackBackTrace()` and `GetModuleHandleA()`. |
 | `gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.cpp` | `vk::Extent2D{...}`: the narrow deduced type is rejected by the Linux toolchain. |
 | `src/runtime_thread.c` | `new_thread()` allocates the thread record with `runtime_low_map()`. Uncharted packs `scePthreadSelf()` into 40 owner bits and compares the unpacked owner with the full handle, so a record above 4 TiB fails its own owner check and the thread sleeps forever (same fix as upstream `bloodborne_pc` PR #193). `affinity_enabled()` is Windows-only now (it is unused on Linux). |
@@ -62,6 +63,12 @@ BB_LTO=OFF BB_PGO=off bash build.sh          # out/bb-probe and out/gpu/libbbgpu
 python3 launcher/uncharted_launcher.py       # or: BB_EXE=u2 bash run_uncharted.sh
 ```
 
+## Documentation
+
+`LINUX.md` is the guide for this fork: what works, the packages for Debian/Ubuntu, Fedora and
+Arch, the build and run steps, the controls, the in-game menu, the environment variables and
+troubleshooting.
+
 ## Verified
 
 U1 (`eboot.bin`), U2 (`big2-ps4_Shipping.elf`) and U3 (`big3-ps4_Shipping.elf`) all reach their
@@ -75,6 +82,7 @@ in windowed, borderless and exclusive runs.
 * `launcher/art/u1.jpg`…`u3.jpg`: official cover art, ignored by git (the launcher generates its
   own art when the folder is absent, as upstream).
 * `input.ini`, `settings.json`, `logs/`: user files, ignored by git.
-* `gpu/third_party/fsr-vulkan`: local development profiling (`BB_FSR4_PROFILE`, `BB_FSR4_STATS`)
-  inside the submodule; unrelated to the port.
-* `third_party/vma`: a copy of the Vulkan Memory Allocator headers used by the build.
+* `gpu/third_party/fsr-vulkan`: the submodule shows as modified because `build.sh` applies the
+  port's own patches (`gpu/patches/fsr-vulkan/*.patch`: the FSR 4 profiling and the libc++
+  `<mutex>` include) to its working tree on every build. The recorded commit is unchanged, so a
+  fresh clone gets the same result; nothing here is a local edit to keep.
