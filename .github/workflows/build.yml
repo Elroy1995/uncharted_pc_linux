@@ -21,12 +21,18 @@ jobs:
           for p in clang cmake ninja-build pkg-config python3 \
             libvulkan-dev vulkan-tools libsdl3-dev libfmt-dev libboost-dev \
             libxxhash-dev libzydis-dev libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
-            libswresample-dev libprotobuf-dev protobuf-compiler nlohmann-json3-dev libssl-dev zlib1g-dev \
+            libswresample-dev nlohmann-json3-dev libssl-dev zlib1g-dev \
             libminiupnpc-dev libx11-dev glslang-tools spirv-headers libvulkan-memory-allocator-dev \
             mesa-vulkan-drivers python3-tk python3-pil; do
             apt-get install -y "$p" || missing="$missing $p"
           done
           echo "MISSING PACKAGES:$missing"
+
+      - name: Install protobuf (strict)
+        run: |
+          apt-get install -y libprotobuf-dev protobuf-compiler
+          protoc --version
+          dpkg -L libprotobuf-dev | grep -i cmake || echo "NO CMAKE FILES IN libprotobuf-dev"
 
       - name: Build robin-map from source
         run: |
@@ -34,17 +40,15 @@ jobs:
           cmake -S /tmp/robin-map -B /tmp/robin-map/build -DCMAKE_INSTALL_PREFIX=/usr
           cmake --install /tmp/robin-map/build
 
-      - name: Diagnose protobuf
-        run: |
-          dpkg -l | grep -i -E "protobuf|absl" || echo "no protobuf/absl packages installed"
-          find / \( -iname 'protobuf-config.cmake' -o -iname 'protobufconfig.cmake' \) 2>/dev/null || true
-          protoc --version || true
-
       - name: Build
         run: BB_LTO=OFF BB_PGO=off bash build.sh
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifact
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: uncharted-linux-build
           path: |
+            out/bb-probe
+            out/gpu/libbbgpu.so
+            out/gpu-build.log
