@@ -64,6 +64,12 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.fsr4_auto_exposure = i != 0;
     } else if (key == "fsr4_invert_jitter") {
         v.fsr4_invert_jitter = i != 0;
+    } else if (key == "display_mode") {
+        for (int m = 0; m < DisplayModeCount; ++m) {
+            if (value == DisplayModeName(m)) {
+                v.display_mode = m;
+            }
+        }
     } else if (key == "model_lod") {
         v.model_lod = std::clamp(i, -2, 2);
     } else if (key == "live_resolution") {
@@ -127,6 +133,11 @@ void Load() {
         if (const char* value = std::getenv(env)) {
             Set(v, key, value);
         }
+    }
+    // The launchers ask for fullscreen at start with BB_FULLSCREEN=1 (run.py, run_uncharted.sh);
+    // when it is not set the mode stays whatever the player chose in the in-game menu.
+    if (const char* fullscreen = std::getenv("BB_FULLSCREEN"); fullscreen && fullscreen[0] == '1') {
+        v.display_mode = DisplayBorderless;
     }
     v.startup_preset = v.preset;
     v.startup_upscaler = v.upscaler;
@@ -197,13 +208,15 @@ void Save() {
                  "# bbport settings (in-game menu: Insert / L3+R3)\n"
                  "upscaler=%s\npreset=%d\nsharpen=%d\nsharpness=%.2f\njitter=%d\n"
                  "reactive=%d\nobject_motion=%d\nreactive_scale=%.2f\nreactive_threshold=%.2f\nreactive_max=%.2f\n"
-                 "debug_view=%d\nshow_fps=%d\nfsr4_auto_exposure=%d\nfsr4_invert_jitter=%d\n",
+                 "debug_view=%d\nshow_fps=%d\nfsr4_auto_exposure=%d\nfsr4_invert_jitter=%d\n"
+                 "display_mode=%s\n",
                  UpscalerName(v.upscaler), v.preset.load(), int(v.sharpen.load()),
                  v.sharpness.load(), int(v.jitter.load()), int(v.reactive.load()),
                  int(v.object_motion.load()),
                  v.reactive_scale.load(), v.reactive_threshold.load(), v.reactive_max.load(),
                  v.debug_view.load(), int(v.show_fps.load()),
-                 int(v.fsr4_auto_exposure.load()), int(v.fsr4_invert_jitter.load()));
+                 int(v.fsr4_auto_exposure.load()), int(v.fsr4_invert_jitter.load()),
+                 DisplayModeName(v.display_mode));
     // Read by patches.py at start.
     for (int e = 0; e < EffectCount; ++e) {
         std::fprintf(file, "%s=%d\n", Effects[e].key, int(v.effects[e].load()));
@@ -237,6 +250,11 @@ const char* UpscalerName(int upscaler) {
 const char* FrameGenName(int frame_gen) {
     static constexpr const char* names[FrameGenCount] = {"off", "fsr3", "dlss"};
     return names[std::clamp(frame_gen, 0, FrameGenCount - 1)];
+}
+
+const char* DisplayModeName(int mode) {
+    static constexpr const char* names[DisplayModeCount] = {"windowed", "borderless", "exclusive"};
+    return names[std::clamp(mode, 0, DisplayModeCount - 1)];
 }
 
 } // namespace BbSettings
