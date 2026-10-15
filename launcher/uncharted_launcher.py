@@ -146,7 +146,7 @@ APP_DEFAULTS = {'game_dir': '', 'user_dir': '', 'start': 'u1', 'language': '1', 
                 'fullscreen': False, 'present_mode': 'Mailbox', 'frame_rate': '60', 'show_fps': False,
                 'window_size': '1920x1080', 'scaler': 'fsr1', 'sharpening': '500',
                 'anti_aliasing': 'off', 'aa_sharpness': '0.2', 'frame_generation': 'off',
-                'frame_gen_multiplier': '2', 'extra_env': '', 'close_on_play': False,
+                'frame_gen_multiplier': '2', 'extra_env': '', 'close_on_play': False, 'skip_intro': True,
                 'mouse_look': True, 'mouse_sensitivity': '3.0', 'mouse_invert_y': False,
                 'pad_invert_y': False, 'key_bindings': {}, 'pad_bindings': {}, 'check_updates': True}
 
@@ -248,6 +248,19 @@ def set_ini(key, value):
     if not found:
         out.append(f'{key}={value}')
     path.write_text('\n'.join(out) + '\n', encoding='utf-8')
+
+
+def get_ini(key, default=None):
+    """The value of one key in bbport.ini, or default when it is absent."""
+    try:
+        lines = ini_path().read_text(encoding='utf-8').splitlines()
+    except OSError:
+        return default
+    for line in lines:
+        name, sep, value = line.partition('=')
+        if sep and not line.lstrip().startswith('#') and name.strip() == key:
+            return value.strip()
+    return default
 
 
 def game_info(folder):
@@ -378,6 +391,10 @@ class Launcher:
         self.tk, self.ttk, self.filedialog, self.messagebox = tk, ttk, filedialog, messagebox
         self.root = root
         self.app = {**APP_DEFAULTS, **load_json(CONFIG_FILE, {})}
+        # skip_intro is shared with the in-game menu through bbport.ini: it wins over settings.json.
+        ini_skip_intro = get_ini('skip_intro')
+        if ini_skip_intro is not None:
+            self.app['skip_intro'] = ini_skip_intro == '1'
         self.vars = {}
         self.process = self.job = None
         self.entered, self.last_problem, self.stopping = False, '', False
@@ -1206,6 +1223,9 @@ class Launcher:
 
     def build_advanced(self):
         f = self.page('advanced', _('Advanced'), _('Maintenance and options for testing.'))
+        self.check(f, 'skip_intro', _('Skip the intro movies'),
+                   _('Starts each game as part of the collection, so the Sony, Naughty Dog and Bluepoint '
+                     'logos are skipped and it goes straight to the menu. Applies when the game starts.'))
         self.check(f, 'close_on_play', _('Close the launcher when the game starts'))
         extra = self.ttk.Entry(f, textvariable=self.var('extra_env'), width=60)
         self.row(f, _('Environment'), extra, _('Extra variables for the game, NAME=value separated by spaces.'))
@@ -1281,6 +1301,7 @@ class Launcher:
         CONFIG_FILE.write_text(json.dumps(self.app, indent=2) + '\n', encoding='utf-8')
         try:
             set_ini('show_fps', '1' if self.app['show_fps'] else '0')
+            set_ini('skip_intro', '1' if self.app['skip_intro'] else '0')
         except OSError:
             pass
 

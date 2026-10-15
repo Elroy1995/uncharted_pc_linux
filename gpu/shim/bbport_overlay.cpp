@@ -424,7 +424,9 @@ void Menu() {
         Checkbox(BbSettings::Effects[e].label, s.effects[e]);
     }
     Hint("Effects are enabled and disabled by the game's patches at start (patches/Bloodborne.xml). "
-         "Motion blur and dynamic light shadows load the GPU noticeably.");
+         "Motion blur and dynamic light shadows load the GPU noticeably. \"Skip intro movies at "
+         "start\" starts each game as part of the collection (its gameconfig.txt), skipping the "
+         "Sony, Naughty Dog and Bluepoint logos.");
     Hint("Free camera: hold Cross and press L3 (keyboard: Space + Z). "
          "Debug menu: left touchpad / Tab. Needs DbgFont14h.ccm and DbgFont14h.tpf "
          "in dvdroot_ps4/font from Nexus mod #253. Right touchpad: Backspace.");

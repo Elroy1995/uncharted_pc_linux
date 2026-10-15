@@ -53,6 +53,15 @@ game=$(realpath -- "$game")
 
 # --- the collection's renderer hooks (same values as run.py) -------------------------------
 export BB_CONFIG=${BB_CONFIG:-"$data/bbport.ini"}
+# --- skip the intro logos (Sony / Naughty Dog / Bluepoint) ----------------------------------
+# bbport.ini skip_intro (the launcher and the in-game menu toggle it): each game boots as part
+# of the collection when ispartofuccollection is in its gameconfig.txt, which skips the logos
+# and goes straight to the menu. big3 has no bp_skipintromovie and its argv parser breaks on
+# unknown flags, so the config file is the route the three games share.
+skip_intro=0
+if [[ -r $BB_CONFIG ]] && grep -qiE '^[[:space:]]*skip_intro[[:space:]]*=[[:space:]]*1[[:space:]]*$' "$BB_CONFIG"; then
+    skip_intro=1
+fi
 export BB_INPUT_CONFIG=${BB_INPUT_CONFIG:-"$data/input.ini"}
 export BB_VELOCITY_PS=${BB_VELOCITY_PS:-f4b18264}
 export BB_UPSCALE_BEFORE_CS=${BB_UPSCALE_BEFORE_CS:-aec539f0}
@@ -88,6 +97,21 @@ guest_argv=
 status=0
 while :; do
     if [[ ! -f $game/$exe ]]; then echo "FATAL: no '$exe' in '$game'." >&2; exit 1; fi
+
+    # Keep each game's gameconfig.txt in sync with the intro toggle (see above).
+    case $exe in
+        eboot.bin)             gameconfig=$game/u1data/build/main/gameconfig.txt ;;
+        big2-ps4_Shipping.elf) gameconfig=$game/u2data/build/main/gameconfig.txt ;;
+        big3-ps4_Shipping.elf) gameconfig=$game/u3data/build/main/gameconfig.txt ;;
+        *)                     gameconfig= ;;
+    esac
+    if [[ -n $gameconfig && -f $gameconfig ]]; then
+        if [[ $skip_intro == 1 ]]; then
+            grep -qxF ispartofuccollection "$gameconfig" || printf 'ispartofuccollection\n' >> "$gameconfig"
+        elif grep -qxF ispartofuccollection "$gameconfig"; then
+            grep -vxF ispartofuccollection "$gameconfig" > "$gameconfig.tmp" && mv -f -- "$gameconfig.tmp" "$gameconfig"
+        fi
+    fi
 
     # Per-executable output folder, named as run.py does (eboot, big2, big3).
     stem=${exe%%-*}; stem=${stem%.elf}; stem=${stem%.bin}
