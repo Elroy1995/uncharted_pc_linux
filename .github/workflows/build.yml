@@ -17,12 +17,22 @@ jobs:
 
       - name: Install dependencies
         run: |
-          apt-get install -y clang cmake ninja-build pkg-config python3 \
-            libvulkan-dev vulkan-tools libsdl3-dev libfmt-dev libboost-dev libtsl-robin-map-dev \
+          missing=""
+          for p in clang cmake ninja-build pkg-config python3 \
+            libvulkan-dev vulkan-tools libsdl3-dev libfmt-dev libboost-dev \
             libxxhash-dev libzydis-dev libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
             libswresample-dev libprotobuf-dev protobuf-compiler nlohmann-json3-dev libssl-dev zlib1g-dev \
             libminiupnpc-dev libx11-dev glslang-tools spirv-headers libvulkan-memory-allocator-dev \
-            mesa-vulkan-drivers python3-tk python3-pil
+            mesa-vulkan-drivers python3-tk python3-pil; do
+            apt-get install -y "$p" || missing="$missing $p"
+          done
+          echo "MISSING PACKAGES:$missing"
+
+      - name: Build robin-map from source
+        run: |
+          git clone --depth 1 --branch v1.3.0 https://github.com/Tessil/robin-map.git /tmp/robin-map
+          cmake -S /tmp/robin-map -B /tmp/robin-map/build -DCMAKE_INSTALL_PREFIX=/usr
+          cmake --install /tmp/robin-map/build
 
       - name: Build
         run: BB_LTO=OFF BB_PGO=off bash build.sh
