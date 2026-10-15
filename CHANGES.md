@@ -1,0 +1,80 @@
+# Changes
+
+Work on top of `Supermedo/uncharted_pc` (`main`, commit 00e7129): the same port running the three
+games on Linux, plus the launcher and in-game menu work.
+
+Nothing here changes the Windows behaviour except where it is stated (portable settings, default
+controls, and the new display mode, which is available on both systems).
+
+## Linux build and runtime
+
+| File | Change |
+|---|---|
+| `gpu/CMakeLists.txt` | miniupnpc is found and linked on every platform (UPnP is not Windows-only), and the `xbyak` include directory is set for every platform (the shader recompiler needs it on Linux too). |
+| `gpu/shadps4/video_core/renderer_vulkan/vk_scheduler.cpp` | Linux equivalents of the Windows diagnostics: `gettid()`, `backtrace()` and `dladdr()` instead of `GetCurrentThreadId()`, `CaptureStackBackTrace()` and `GetModuleHandleA()`. |
+| `gpu/shadps4/video_core/renderer_vulkan/vk_frame_generation.cpp` | `vk::Extent2D{...}`: the narrow deduced type is rejected by the Linux toolchain. |
+| `src/runtime_thread.c` | `new_thread()` allocates the thread record with `runtime_low_map()`. Uncharted packs `scePthreadSelf()` into 40 owner bits and compares the unpacked owner with the full handle, so a record above 4 TiB fails its own owner check and the thread sleeps forever (same fix as upstream `bloodborne_pc` PR #193). `affinity_enabled()` is Windows-only now (it is unused on Linux). |
+| `src/runtime_fiber.c`, `src/runtime_services.c` | Added the missing `<unistd.h>` includes. |
+| `src/probe.c` | `runtime_restart()` honours `BB_RESTART_SCRIPT` (default `run.sh`), so the in-game "Apply and restart" re-runs the launcher that started the game. |
+
+## Linux runner: `run_uncharted.sh`
+
+Linux counterpart of `run.py`. It prepares the guest image for `eboot.bin`,
+`big2-ps4_Shipping.elf` or `big3-ps4_Shipping.elf` (`BB_EXE=u1|u2|u3`), sets the collection's
+renderer hooks, starts `bb-probe`, and follows `sceSystemServiceLoadExec` so the collection menu
+can hand over to the next game. Honours `BB_GAME_DIR`, `BB_DATA_DIR`, `BB_USER_DIR`, `BB_LOG_DIR`,
+`BB_BUILD`, `BB_TIMEOUT`, `BB_PROBE`, `BB_INPUT_CONFIG`, `BB_VBLANK_HZ` and `BB_RESTART_SCRIPT`,
+and logs every run under `logs/`.
+
+## Launcher: `launcher/uncharted_launcher.py`
+
+* Platform layer (`IS_WINDOWS`): `run.py` on Windows, `run_uncharted.sh` on Linux; a Windows job
+  object or a Linux process group for **Stop**; `os.startfile` or `xdg-open`; a PowerShell `.lnk`
+  or a `.desktop` entry. The pieces that only exist on Windows stay Windows-only: `msvcrt` for the
+  standard streams, the DPI call, the Steam shortcut section (hidden on Linux) and the updater
+  (the releases are Windows builds, so its section is hidden on Linux).
+* Settings are portable: `<port>/settings.json` next to `bbport.ini` and `input.ini`, instead of
+  `%APPDATA%` or `~/.config`, and kept by updates (`USER_FILES`).
+* Default controls are the inFAMOUS mapping used with shadPS4 (`CUSA00223.ini`, the file the game
+  falls back to there): cross=Space, circle=Left Shift, square=F, triangle=R, l1=Q, r1=E,
+  l2=X+right mouse, r2=C+left mouse, l3=1, r3=2, options=Enter (Escape as a second binding),
+  touchpad=Tab, D-pad=arrows, left stick=WASD, mouse look on with sensitivity 3.0.
+* Window icon comes from the box art through PIL on Linux (Tk cannot read the `.ico` there), and
+  the brand wordmark is measured so it fits the sidebar with whatever face the system has.
+
+## In-game menu (`gpu/shim`, Dear ImGui)
+
+* Labels translated from Russian to English (`bbport_overlay.cpp`, `bbport_settings.h`).
+* Window title: `Uncharted Settings  (Insert / L3+R3)`.
+* **Display mode**, new: `Windowed`, `Borderless (fullscreen)` and `Exclusive fullscreen`,
+  applied live through SDL3 (`window.cpp`) and kept in `bbport.ini` (`display_mode=windowed|
+  borderless|exclusive`, written when the menu is closed). `BB_FULLSCREEN=1` — what the launchers
+  send — still asks for borderless at start. Exclusive requests the panel's native mode, so the
+  desktop does not scale the picture a second time; Wayland compositors may grant it as a normal
+  fullscreen (the code says so).
+* The menu fits the game window: it opens 620 px wide, is clamped to the window on both axes
+  (the long option list scrolls inside) and can still be resized by hand within those limits.
+
+## Running on Linux
+
+```sh
+BB_LTO=OFF BB_PGO=off bash build.sh          # out/bb-probe and out/gpu/libbbgpu.so
+python3 launcher/uncharted_launcher.py       # or: BB_EXE=u2 bash run_uncharted.sh
+```
+
+## Verified
+
+U1 (`eboot.bin`), U2 (`big2-ps4_Shipping.elf`) and U3 (`big3-ps4_Shipping.elf`) all reach their
+title screen and menu on Linux (RDNA2 / RADV / Mesa, Wayland): started directly, from the
+collection menu through `LoadExec`, and from the launcher's Play button; frames captured and
+checked. The launcher's Stop ends the runner and the game. The three display modes were checked
+in windowed, borderless and exclusive runs.
+
+## Local only (not part of this change set)
+
+* `launcher/art/u1.jpg`…`u3.jpg`: official cover art, ignored by git (the launcher generates its
+  own art when the folder is absent, as upstream).
+* `input.ini`, `settings.json`, `logs/`: user files, ignored by git.
+* `gpu/third_party/fsr-vulkan`: local development profiling (`BB_FSR4_PROFILE`, `BB_FSR4_STATS`)
+  inside the submodule; unrelated to the port.
+* `third_party/vma`: a copy of the Vulkan Memory Allocator headers used by the build.
