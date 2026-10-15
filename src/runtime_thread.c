@@ -107,7 +107,12 @@ static void attach(GuestThread *t) {
     current=t;
 }
 static GuestThread *new_thread(void) {
-    GuestThread *t=calloc(1,sizeof(*t));
+    /* Uncharted's hybrid locks pack scePthreadSelf() into 40 owner bits, then
+     * compare the unpacked owner with the full handle. Host worker malloc
+     * arenas can return higher addresses, making a thread fail its own owner
+     * check and sleep forever. Records already live until process exit; low
+     * anonymous mappings preserve that lifetime and are zero initialized. */
+    GuestThread *t=runtime_low_map(sizeof(*t),PROT_READ|PROT_WRITE);
     if (!t) return NULL;
     t->attr=(ThreadAttr){.magic=ATTR_MAGIC,.policy=1,.prio=DEFAULT_PRIO,.stack=DEFAULT_STACK,.affinity=0x7f};
     return t;
@@ -364,11 +369,13 @@ static ABI int32_t thread_set_prio(GuestThread *t,int prio) {
 /* BB_AFFINITY=1: the guest's core masks are applied, PS4 core i on host logical processor 2*i
  * (one per physical core where SMT pairs neighbour). Off by default: the PS4 scheduler's
  * guarantees (threads on one core never run at once) are not otherwise reproduced. */
+#ifdef _WIN32
 static int affinity_enabled(void) {
     static int value=-1;
     if (value<0) { const char *env=getenv("BB_AFFINITY"); value=env && env[0]=='1'; }
     return value;
 }
+#endif
 static void apply_affinity(GuestThread *t,int current_thread) {
 #ifdef _WIN32
     if (!affinity_enabled()) return;

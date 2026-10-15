@@ -187,11 +187,16 @@ target_link_libraries(bbnet PRIVATE OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
 if (WIN32)
     target_sources(bbnet PRIVATE third_party/wepoll/wepoll.c)
     target_include_directories(bbnet PRIVATE third_party/wepoll)
-    find_path(MINIUPNPC_INCLUDE miniupnpc.h PATH_SUFFIXES miniupnpc REQUIRED)
-    find_library(MINIUPNPC_LIBRARY NAMES libminiupnpc.a miniupnpc REQUIRED)
-    target_include_directories(bbnet PRIVATE "${MINIUPNPC_INCLUDE}")
+endif()
+# UPnP (net_upnp.cpp) uses miniupnpc on every platform. MINIUPNP_STATICLIB is for the MinGW
+# static library only: it marks the API as a local static on Windows and has no effect when
+# the shared miniupnpc is linked on Linux.
+find_path(MINIUPNPC_INCLUDE miniupnpc.h PATH_SUFFIXES miniupnpc REQUIRED)
+find_library(MINIUPNPC_LIBRARY NAMES libminiupnpc.a miniupnpc REQUIRED)
+target_include_directories(bbnet PRIVATE "${MINIUPNPC_INCLUDE}")
+target_link_libraries(bbnet PRIVATE "${MINIUPNPC_LIBRARY}")
+if (WIN32)
     target_compile_definitions(bbnet PRIVATE MINIUPNP_STATICLIB)
-    target_link_libraries(bbnet PRIVATE "${MINIUPNPC_LIBRARY}")
 endif()
 target_compile_definitions(bbnet PRIVATE BOOST_ASIO_STANDALONE NDEBUG)
 target_compile_options(bbnet PRIVATE -Wno-deprecated-declarations -Wno-missing-field-initializers)
@@ -230,11 +235,12 @@ if (WIN32)
     # <windows.h> out of the way of std::min/max and the Vulkan/SDL headers.
     target_compile_definitions(bbgpu PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
     target_compile_options(bbgpu PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/shim/bb_win_compat.h)
-    target_include_directories(bbgpu PRIVATE third_party/xbyak)
     target_link_libraries(bbgpu PUBLIC Vulkan::Vulkan ws2_32 bcrypt ntdll synchronization winmm)
 else()
     target_link_libraries(bbgpu PUBLIC PkgConfig::X11)
 endif()
+# xbyak (third_party/xbyak, header-only) is used by the shader recompiler on every platform.
+target_include_directories(bbgpu PRIVATE third_party/xbyak)
 
 # bbport (Windows): bbgpu is a static library there, so the loader and the HLE runtime are
 # linked here, where CMake knows its dependencies (build.sh builds them with ninja).

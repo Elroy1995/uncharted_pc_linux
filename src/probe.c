@@ -644,9 +644,13 @@ void runtime_restart(void) {
     /* The new launch waits for this process's GPU device to go away (run.py --after). */
     TerminateProcess(GetCurrentProcess(),0);
 #else
-    puts("Runtime: restarting through run.sh");
+    /* BB_RESTART_SCRIPT names the launcher to run again (run.sh by default); the Linux
+     * launcher points it at itself so the restart keeps the same flow. */
+    const char *script=getenv("BB_RESTART_SCRIPT");
+    if (!script || !*script) script="run.sh";
+    printf("Runtime: restarting through %s\n",script);
     syscall(SYS_close_range, 3u, ~0u, 0u);
-    execlp("bash", "bash", "run.sh", (char *)NULL);
+    execlp("bash", "bash", script, (char *)NULL);
     perror("runtime_restart: exec");
     _exit(1);
 #endif

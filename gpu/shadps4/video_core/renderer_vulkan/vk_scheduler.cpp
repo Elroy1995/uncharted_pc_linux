@@ -11,6 +11,8 @@
 #include <unordered_map>
 #ifndef _WIN32
 #include <dlfcn.h>
+#include <execinfo.h>
+#include <unistd.h>
 #endif
 #include <functional>
 
@@ -458,16 +460,22 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     if (submit_threads) {
         static std::mutex seen_mutex;
         static std::vector<std::pair<const Scheduler*, u32>> seen;
+#ifdef _WIN32
         const u32 tid = static_cast<u32>(GetCurrentThreadId());
+#else
+        const u32 tid = static_cast<u32>(gettid());
+#endif
         std::scoped_lock seen_lk{seen_mutex};
         if (std::ranges::find(seen, std::pair<const Scheduler*, u32>{this, tid}) == seen.end()) {
             seen.emplace_back(this, tid);
-            PWSTR description = nullptr;
             char name[64] = "?";
+#ifdef _WIN32
+            PWSTR description = nullptr;
             if (SUCCEEDED(GetThreadDescription(GetCurrentThread(), &description)) && description) {
                 WideCharToMultiByte(CP_UTF8, 0, description, -1, name, sizeof(name), nullptr, nullptr);
                 LocalFree(description);
             }
+#endif
             std::printf("Scheduler %p: first submission from thread %u '%s'%s\n",
                         static_cast<const void*>(this), tid, name, on_submit ? " (draw scheduler)" : "");
         }
@@ -479,11 +487,22 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
         static std::mutex report_mutex;
         static std::vector<void*> reported;
         void* frames[24]{};
+#ifdef _WIN32
         const u16 count = CaptureStackBackTrace(1, 24, frames, nullptr);
+#else
+        const u16 count = static_cast<u16>(backtrace(frames, 24));
+#endif
         std::scoped_lock report_lk{report_mutex};
         if (count > 2 && std::ranges::find(reported, frames[1]) == reported.end()) {
             reported.push_back(frames[1]);
+#ifdef _WIN32
             const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+#else
+            Dl_info info{};
+            const auto base = dladdr(frames[1], &info) != 0
+                                  ? reinterpret_cast<uintptr_t>(info.dli_fbase)
+                                  : 0;
+#endif
             std::printf("Scheduler: GPU thread submits while the draw pipe is busy:");
             for (u16 i = 0; i < count; ++i) {
                 std::printf(" %llx", static_cast<unsigned long long>(
