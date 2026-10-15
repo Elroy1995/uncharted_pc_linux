@@ -52,6 +52,7 @@ u32 ConstCheckHash() {
 } // namespace
 
 extern bool (*g_draw_pipe_busy)();
+extern bool g_record_checkpoints;
 extern bool g_gpu_checkpoints;
 extern VkQueue g_crash_queue;
 extern void (*g_gpu_checkpoint_report)();
@@ -62,9 +63,11 @@ void PrintFaultHistory(VAddr address, u64 size);
 } // namespace VideoCore
 namespace Vulkan {
 
-// bbport diagnosis: BB_GPU_CHECKPOINTS=1 — a checkpoint (VK_NV_device_diagnostic_checkpoints)
-// before every draw and dispatch; a GPU crash prints the last one each pipeline stage reached,
-// with the commands after it (the one the GPU was running when it hung or faulted).
+// bbport diagnosis: BB_GPU_CHECKPOINTS=1 — every draw and dispatch is recorded in a CPU-side
+// ring (shader hashes, counts, bound buffers). On a GPU crash or a 5 s stall the last records
+// are printed: the command that stops completing. When the driver has
+// VK_NV_device_diagnostic_checkpoints (RADV does not) the checkpoint is also marked on the
+// command buffer and the exact stage the GPU reached is printed.
 namespace {
 struct CheckpointRecord {
     u64 seq;
@@ -88,7 +91,7 @@ std::atomic<u64> checkpoint_seq{0};
 
 const void* NoteCheckpoint(const char* kind, u64 hash0, u64 hash1, u32 a, u32 b, u32 c,
                            VAddr args) {
-    if (!g_gpu_checkpoints) {
+    if (!g_record_checkpoints) {
         return nullptr;
     }
     const u64 seq = checkpoint_seq.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -96,10 +99,15 @@ const void* NoteCheckpoint(const char* kind, u64 hash0, u64 hash1, u32 a, u32 b,
     record = {seq, kind, {hash0, hash1}, {a, b, c}, args};
     record.num_buffers = num_checkpoint_buffers;
     std::copy_n(checkpoint_buffers, num_checkpoint_buffers, record.buffers);
+    // Without the extension vkCmdSetCheckpointNV must not be called (its function pointer is not
+    // loaded). The record is still kept on the CPU; there is simply no marker to hand the driver.
+    if (!g_gpu_checkpoints) {
+        return nullptr;
+    }
     return reinterpret_cast<const void*>(static_cast<uintptr_t>(seq));
 }
 
-void PrintCheckpoint(u64 seq) {
+void PrintCheckpoint(u64 seq, bool history) {
     const auto& r = checkpoint_ring[seq % CheckpointRingSize];
     if (r.seq != seq) {
         std::printf("GPU crash:   #%llu (overwritten)\n", static_cast<unsigned long long>(seq));
@@ -122,14 +130,31 @@ void PrintCheckpoint(u64 seq) {
         std::printf("GPU crash:     buffer 0x%llx size 0x%x%s\n",
                     static_cast<unsigned long long>(b.address), b.size,
                     b.written ? " (written)" : "");
-        VideoCore::PrintFaultHistory(b.address, b.size);
+        if (history) {
+            VideoCore::PrintFaultHistory(b.address, b.size);
+        }
     }
-    if (r.args) {
+    if (history && r.args) {
         VideoCore::PrintFaultHistory(r.args, 64);
     }
 }
 
+// bbport: without VK_NV_device_diagnostic_checkpoints (RADV) there is no GPU-side marker, so the
+// report prints the last recorded draws/dispatches from the CPU ring instead.
+constexpr u32 RecentCheckpointCount = 24;
+void PrintRecentCheckpoints() {
+    const u64 latest = checkpoint_seq.load(std::memory_order_relaxed);
+    const u64 count = std::min<u64>(RecentCheckpointCount, latest);
+    std::printf("GPU crash: last %llu of %llu recorded draws/dispatches:\n",
+                static_cast<unsigned long long>(count),
+                static_cast<unsigned long long>(latest));
+    for (u64 s = latest - count + 1; s <= latest; ++s) {
+        PrintCheckpoint(s, false);
+    }
+}
+
 void ReportCheckpoints() {
+    PrintRecentCheckpoints();
     const auto get = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetQueueCheckpointDataNV;
     if (!g_crash_queue || !get) {
         return;
@@ -146,11 +171,43 @@ void ReportCheckpoints() {
         std::printf("GPU crash: stage 0x%x reached #%llu:\n", data[i].stage,
                     static_cast<unsigned long long>(seq));
         for (u64 s = seq; s && s <= seq + 3 && s <= latest; ++s) {
-            PrintCheckpoint(s);
+            PrintCheckpoint(s, true);
         }
     }
 }
 } // namespace
+
+/// bbport: the sequence number of the last recorded checkpoint (0 when not recording). The
+/// scheduler tags every submission with it, so a crash can name the commands of the submission
+/// the GPU is stuck on.
+u64 CurrentCheckpointSeq() {
+    return checkpoint_seq.load(std::memory_order_relaxed);
+}
+
+/// bbport: prints the checkpoints recorded with sequence numbers in (first, last] — the commands
+/// of one submitted command buffer. Does nothing without a ring or an empty range.
+void PrintCheckpointBatch(u64 first, u64 last) {
+    if (!checkpoint_ring || last <= first) {
+        return;
+    }
+    const u64 count = last - first;
+    std::printf("GPU crash:   in-flight submit recorded %llu commands (#%llu..#%llu):\n",
+                static_cast<unsigned long long>(count), static_cast<unsigned long long>(first + 1),
+                static_cast<unsigned long long>(last));
+    // A submission larger than the ring has lost its head: print what is still there, capped.
+    const u64 start =
+        std::max<u64>(first + 1, last >= CheckpointRingSize ? last - CheckpointRingSize + 1 : 1);
+    constexpr u64 MaxPrinted = 1024;
+    u64 printed = 0;
+    for (u64 s = start; s <= last; ++s) {
+        if (++printed > MaxPrinted) {
+            std::printf("GPU crash:   ... %llu more commands\n",
+                        static_cast<unsigned long long>(last - s + 1));
+            break;
+        }
+        PrintCheckpoint(s, false);
+    }
+}
 
 static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {
     // TODO(roamic): Add support for multiple viewports and geometry shaders when ViewportIndex
@@ -187,7 +244,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     memory->SetRasterizer(this);
 
     GpuProfiler::Init(instance, scheduler);
-    if (g_gpu_checkpoints) {
+    if (g_record_checkpoints) {
         checkpoint_ring = std::make_unique<CheckpointRecord[]>(CheckpointRingSize);
         g_gpu_checkpoint_report = &ReportCheckpoints;
         VideoCore::EnableFaultHistory();
@@ -1582,7 +1639,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     const u32 first_vertex = vertex_offset;
     const u32 first_instance = instance_offset;
     const void* checkpoint = nullptr;
-    if (g_gpu_checkpoints) {
+    if (g_record_checkpoints) {
         const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
         checkpoint = NoteCheckpoint("draw", vs_info.pgm_hash, ps ? ps->pgm_hash : 0, num_indices,
                                     num_instances, 0, 0);
@@ -1743,7 +1800,7 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     const vk::Buffer counts = count_address != 0 ? count_buffer->Handle() : vk::Buffer{};
     const u64 counts_offset = count_address != 0 ? count_offset : 0;
     const void* checkpoint = nullptr;
-    if (g_gpu_checkpoints) {
+    if (g_record_checkpoints) {
         const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
         checkpoint = NoteCheckpoint(is_indexed ? "indexed indirect draw" : "indirect draw",
                                     pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
@@ -2927,7 +2984,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                 push_data.AddOffset(binding.buffer, adjust);
                 buffer_infos.emplace_back(buffer->Handle(), offset_aligned, size + adjust);
                 bound_buffers.emplace_back(buffer, offset, size, desc.is_written);
-                if (g_gpu_checkpoints && num_checkpoint_buffers < std::size(checkpoint_buffers)) {
+                if (g_record_checkpoints && num_checkpoint_buffers < std::size(checkpoint_buffers)) {
                     checkpoint_buffers[num_checkpoint_buffers++] = {
                         vsharp.base_address, static_cast<u32>(size), desc.is_written};
                 }

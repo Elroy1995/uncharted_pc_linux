@@ -32,6 +32,10 @@ class VkCtxScope;
 
 namespace Vulkan {
 
+/// bbport: records a signal submitted to the GPU outside Scheduler::SubmitExecution (the sparse
+/// arena binds), so the GPU stall report does not flag it as a semaphore that is never signaled.
+void NoteSubmittedSignal(vk::Semaphore semaphore, u64 tick);
+
 class Instance;
 
 struct RenderAttachment {

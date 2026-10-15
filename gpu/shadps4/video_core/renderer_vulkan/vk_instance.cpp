@@ -21,8 +21,10 @@
 namespace Vulkan {
 
 bool g_device_fault_ext = false;
-// bbport diagnosis: BB_GPU_CHECKPOINTS=1 (VK_NV_device_diagnostic_checkpoints): the queue whose
-// last checkpoints a GPU crash report prints.
+// bbport diagnosis: BB_GPU_CHECKPOINTS=1 — record every draw and dispatch in a CPU-side ring.
+// g_gpu_checkpoints is set too when the driver has VK_NV_device_diagnostic_checkpoints (RADV
+// does not): only then can the recording also mark the command buffer for the driver.
+bool g_record_checkpoints = false;
 bool g_gpu_checkpoints = false;
 VkQueue g_crash_queue = VK_NULL_HANDLE;
 
@@ -385,6 +387,7 @@ bool Instance::CreateDevice() {
     // bbport: what the GPU touched when the device is lost (reported by vk_semaphore.cpp).
     g_device_fault_ext = add_extension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
     if (const char* env = std::getenv("BB_GPU_CHECKPOINTS"); env && env[0] == '1') {
+        g_record_checkpoints = true;
         g_gpu_checkpoints = add_extension(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
     }
     const bool address_report =

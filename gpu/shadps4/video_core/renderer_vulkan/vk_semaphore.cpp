@@ -31,7 +31,7 @@ namespace Vulkan {
 
 // bbport: the GPU crashed (device lost). The driver's description of the fault is printed and
 // the game ends: every later GPU wait would fail the same way (it used to wait forever).
-[[noreturn]] static void DeviceLost(vk::Device device) {
+[[noreturn]] void DeviceLost(vk::Device device) {
     std::printf("GPU crash: the graphics device was lost\n");
     if (g_device_fault_ext && VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceFaultInfoEXT) {
         const auto get = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceFaultInfoEXT;
@@ -151,6 +151,11 @@ void Semaphore::Wait(u64 tick) {
                         static_cast<unsigned long long>(tick),
                         reinterpret_cast<void*>(static_cast<VkSemaphore>(Handle())));
             g_gpu_stall_report();
+        }
+        // bbport: a stall is the hang that precedes the device lost; print the last recorded
+        // draws/dispatches (BB_GPU_CHECKPOINTS=1) here too.
+        if (!reported && g_gpu_checkpoint_report) {
+            g_gpu_checkpoint_report();
         }
         reported = true;
     }

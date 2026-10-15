@@ -15,6 +15,11 @@ namespace Vulkan {
 class Instance;
 class Scheduler;
 
+/// bbport: a GPU crash (device lost). Prints the driver's fault report, the last GPU
+/// checkpoints (BB_GPU_CHECKPOINTS=1) and the buffers near the fault, then ends the game.
+/// Every later GPU wait would fail the same way.
+[[noreturn]] void DeviceLost(vk::Device device);
+
 class Semaphore {
 public:
     explicit Semaphore(const Instance& instance_);

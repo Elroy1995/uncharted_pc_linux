@@ -25,6 +25,7 @@
 #include "imgui/renderer/texture_manager.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
+#include "video_core/renderer_vulkan/vk_semaphore.h"
 #include "bbport_threads.h"
 
 namespace Vulkan {
@@ -33,6 +34,11 @@ std::mutex Scheduler::submit_mutex;
 
 extern void (*g_gpu_stall_report)();
 bool (*g_draw_pipe_busy)() = nullptr;
+// bbport: from vk_rasterizer.cpp — the checkpoint sequence (BB_GPU_CHECKPOINTS=1). Every
+// submission is tagged with the last seq it recorded; the stall report prints the batch of the
+// submission in flight (see g_submit_seq below).
+extern u64 CurrentCheckpointSeq();
+extern void PrintCheckpointBatch(u64 first, u64 last);
 
 namespace {
 // bbport: the last submissions to the graphics queue (all schedulers share it), printed when a
@@ -49,6 +55,19 @@ std::mutex g_recent_mutex;
 std::array<SubmitRecord, 32> g_recent;
 u64 g_recent_count;
 std::vector<std::pair<const Scheduler*, const Instance*>> g_schedulers;
+// bbport: the highest value ever submitted as a signal for each timeline semaphore. A wait
+// beyond it can never complete: that semaphore is the deadlock (the GPU spins in WAIT_REG_MEM).
+std::unordered_map<VkSemaphore, u64> g_signal_max;
+// bbport: per submission (BB_GPU_CHECKPOINTS=1), the last checkpoint sequence recorded into it,
+// keyed by the timeline value the submission signals. Given the last completed GPU tick, this
+// names the command buffer the GPU is stuck on (the one signalling tick + 1).
+struct SubmitCheckpointSeq {
+    const Scheduler* scheduler;
+    u64 signal;
+    u64 seq;
+};
+constexpr u64 SubmitSeqHistorySize = 1u << 13;
+std::array<SubmitCheckpointSeq, SubmitSeqHistorySize> g_submit_seq;
 } // namespace
 
 void Scheduler::ReportStall() {
@@ -73,7 +92,66 @@ void Scheduler::ReportStall() {
         }
         std::printf("\n");
     }
+    // bbport: a wait whose value no submission ever signals can never complete: the GPU spins
+    // in WAIT_REG_MEM on it until the kernel resets the ring. This names that semaphore.
+    u32 unsatisfied = 0;
+    for (u64 i = g_recent_count - count; i < g_recent_count; ++i) {
+        const auto& r = g_recent[i % g_recent.size()];
+        for (u32 w = 0; w < r.waits; ++w) {
+            const auto it = g_signal_max.find(r.wait_semaphore[w]);
+            const u64 high = it == g_signal_max.end() ? 0 : it->second;
+            if (r.wait_value[w] > high) {
+                std::printf("GPU stall: UNSATISFIED wait in submit #%llu: semaphore %p wants %llu, "
+                            "highest submitted signal %llu\n",
+                            static_cast<unsigned long long>(i),
+                            static_cast<void*>(r.wait_semaphore[w]),
+                            static_cast<unsigned long long>(r.wait_value[w]),
+                            static_cast<unsigned long long>(high));
+                ++unsatisfied;
+            }
+        }
+    }
+    std::printf("GPU stall: %u unsatisfied waits; %zu semaphores seen\n", unsatisfied,
+                g_signal_max.size());
+    // bbport: name the command buffer the GPU is stuck on (BB_GPU_CHECKPOINTS=1). The submission
+    // in flight is the one signalling (last completed tick + 1); its commands are the checkpoints
+    // in (seq of the previous submission, its own last seq]. The cached GPU tick is used on
+    // purpose: a fresh read after the ring reset (device lost) is meaningless.
+    for (const auto& [scheduler, inst] : g_schedulers) {
+        const u64 gpu = scheduler->work_semaphore.KnownGpuTick();
+        const u64 cpu = scheduler->CurrentTick();
+        if (gpu == 0 || gpu + 1 > cpu) {
+            continue;
+        }
+        const u64 want = gpu + 1;
+        const auto& end_entry = g_submit_seq[want % SubmitSeqHistorySize];
+        if (end_entry.scheduler != scheduler || end_entry.signal != want) {
+            std::printf("GPU stall: scheduler %p in-flight submit (signal %llu, GPU tick %llu, "
+                        "CPU tick %llu) is older than the submission history\n",
+                        static_cast<const void*>(scheduler), static_cast<unsigned long long>(want),
+                        static_cast<unsigned long long>(gpu), static_cast<unsigned long long>(cpu));
+            continue;
+        }
+        u64 first = 0;
+        const auto& begin_entry = g_submit_seq[gpu % SubmitSeqHistorySize];
+        if (begin_entry.scheduler == scheduler && begin_entry.signal == gpu) {
+            first = begin_entry.seq;
+        }
+        std::printf("GPU stall: scheduler %p in-flight submit signals %llu (GPU tick %llu, CPU "
+                    "tick %llu), checkpoints %llu..%llu\n",
+                    static_cast<const void*>(scheduler), static_cast<unsigned long long>(want),
+                    static_cast<unsigned long long>(gpu), static_cast<unsigned long long>(cpu),
+                    static_cast<unsigned long long>(first),
+                    static_cast<unsigned long long>(end_entry.seq));
+        PrintCheckpointBatch(first, end_entry.seq);
+    }
     std::fflush(stdout);
+}
+
+void NoteSubmittedSignal(vk::Semaphore semaphore, u64 tick) {
+    std::scoped_lock lk{g_recent_mutex};
+    u64& high = g_signal_max[semaphore];
+    high = std::max(high, tick);
 }
 
 Scheduler::Scheduler(const Instance& instance, bool threaded_recording)
@@ -569,10 +647,18 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
             record.wait_semaphore[w] = info.wait_semas[w];
             record.wait_value[w] = info.wait_ticks[w];
         }
+        for (u32 s = 0; s < info.num_signal_semas; ++s) {
+            u64& high = g_signal_max[info.signal_semas[s]];
+            high = std::max(high, info.signal_ticks[s]);
+        }
     }
     ImGui::Core::TextureManager::Submit();
     auto submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
-    ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
+    if (submit_result == vk::Result::eErrorDeviceLost) {
+        // bbport: the GPU crashed. Print the driver's report and the last GPU checkpoints
+        // (BB_GPU_CHECKPOINTS=1) instead of a bare assertion; DeviceLost() does not return.
+        DeviceLost(instance.GetDevice());
+    }
 
     work_semaphore.Refresh();
     AllocateWorkerCommandBuffers();
