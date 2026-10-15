@@ -4,15 +4,20 @@ on: workflow_dispatch
 jobs:
   build:
     runs-on: ubuntu-latest
+    container: debian:trixie
     steps:
+      - name: Bootstrap
+        run: |
+          apt-get update
+          apt-get install -y git ca-certificates
+
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config git python3 \
+          apt-get install -y clang cmake ninja-build pkg-config python3 \
             libvulkan-dev vulkan-tools libsdl3-dev libfmt-dev libboost-dev libtsl-robin-map-dev \
             libxxhash-dev libzydis-dev libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
             libswresample-dev libprotobuf-dev protobuf-compiler nlohmann-json3-dev libssl-dev zlib1g-dev \
@@ -23,6 +28,7 @@ jobs:
         run: BB_LTO=OFF BB_PGO=off bash build.sh
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: uncharted-linux-build
           path: |
