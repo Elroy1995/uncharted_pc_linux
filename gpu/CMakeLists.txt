@@ -54,8 +54,20 @@ endif()
 find_package(tsl-robin-map REQUIRED)
 find_package(VulkanMemoryAllocator CONFIG QUIET)
 if (NOT VulkanMemoryAllocator_FOUND)
-    # MSYS2 ships the header (include/vma/vk_mem_alloc.h) without a CMake package.
-    find_path(VMA_INCLUDE_DIR vk_mem_alloc.h PATH_SUFFIXES vma REQUIRED)
+    # Vendored copy first (gpu/third_party/vma/include, MIT), then a system one: MSYS2 and some
+    # distributions ship include/vma/vk_mem_alloc.h without a CMake package.
+    find_path(VMA_INCLUDE_DIR vk_mem_alloc.h
+              PATHS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/vma/include
+              PATH_SUFFIXES vma)
+    if (NOT VMA_INCLUDE_DIR)
+        find_path(VMA_INCLUDE_DIR vk_mem_alloc.h PATH_SUFFIXES vma)
+    endif()
+    if (NOT VMA_INCLUDE_DIR)
+        message(FATAL_ERROR "vk_mem_alloc.h (Vulkan Memory Allocator) was not found. Install the "
+            "package (vulkan-memory-allocator, libvulkan-memory-allocator-dev, ...) or drop the "
+            "header into gpu/third_party/vma/include/. "
+            "Source: https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator")
+    endif()
     add_library(VulkanMemoryAllocator INTERFACE)
     add_library(GPUOpen::VulkanMemoryAllocator ALIAS VulkanMemoryAllocator)
     target_include_directories(VulkanMemoryAllocator INTERFACE ${VMA_INCLUDE_DIR})
