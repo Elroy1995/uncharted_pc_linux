@@ -49,6 +49,14 @@ jobs:
           echo "CMAKE_PREFIX_PATH=/opt/protobuf" >> "$GITHUB_ENV"
           echo "/opt/protobuf/bin" >> "$GITHUB_PATH"
 
+      - name: Install newer Vulkan headers from source
+        run: |
+          git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git /tmp/vulkan-headers
+          cmake -S /tmp/vulkan-headers -B /tmp/vulkan-headers/build -DCMAKE_INSTALL_PREFIX=/usr/local
+          cmake --install /tmp/vulkan-headers/build
+          grep -c "eMesaKosmickrisp" /usr/local/include/vulkan/vulkan_enums.hpp
+          echo "CPATH=/usr/local/include" >> "$GITHUB_ENV"
+
       - name: Build
         run: |
           protoc --version
