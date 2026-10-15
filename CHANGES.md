@@ -65,9 +65,9 @@ python3 launcher/uncharted_launcher.py       # or: BB_EXE=u2 bash run_uncharted.
 
 ## Documentation
 
-`LINUX.md` is the guide for this fork: what works, the packages for Debian/Ubuntu, Fedora and
+`README.md` is the guide for this fork: what works, the packages for Debian/Ubuntu, Fedora and
 Arch, the build and run steps, the controls, the in-game menu, the environment variables and
-troubleshooting.
+troubleshooting. The upstream Windows README is kept as `README-windows.md`.
 
 ## Verified
 
