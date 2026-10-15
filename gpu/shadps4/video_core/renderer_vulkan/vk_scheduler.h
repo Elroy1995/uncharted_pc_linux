@@ -723,10 +723,7 @@ public:
     /// KickRecording() or submission.
     [[gnu::noinline]] vk::CommandBuffer CommandBuffer() {
         if (recording_threaded && !direct_mode) {
-            SyncRecording();
-            direct_mode = true;
-            direct_recordings.fetch_add(1, std::memory_order_relaxed);
-            TraceDirectRecording(__builtin_return_address(0));
+            BeginDirectRecording(__builtin_return_address(0));
         }
         return current_cmdbuf;
     }
@@ -763,12 +760,16 @@ public:
     }
 
     /// Makes room for `bytes` of RecordData() plus the command that uses them in the current
-    /// chunk: data and command must share a chunk, which is recycled once executed.
+    /// chunk: data and command must share a chunk, which is recycled once executed. A payload
+    /// larger than a chunk cannot be deferred that way, so this thread records directly instead.
     void ReserveRecordData(size_t bytes) {
         if (!IsRecordingDeferred()) {
             return;
         }
-        ASSERT(bytes + 1024 <= RecordChunk::Capacity);
+        if (bytes + 1024 > RecordChunk::Capacity) {
+            BeginDirectRecording(__builtin_return_address(0));
+            return;
+        }
         if (RecordChunk::Capacity - record_chunk->Size() < bytes + 1024) {
             full_chunks.push_back(std::move(record_chunk));
             record_chunk = AcquireChunk();
@@ -785,6 +786,10 @@ public:
         // Room for the data and the command that follows it, so both stay in one chunk.
         const size_t bytes = data.size_bytes();
         ReserveRecordData(bytes + alignof(T));
+        if (!IsRecordingDeferred()) {
+            // The payload does not fit in a chunk: keep the caller's data, used at once.
+            return data;
+        }
         auto* dst = static_cast<T*>(record_chunk->Allocate(bytes, alignof(T)));
         std::memcpy(dst, data.data(), bytes);
         return {dst, data.size()};
@@ -881,6 +886,18 @@ private:
     void AllocateWorkerCommandBuffers();
 
     std::unique_ptr<RecordChunk> AcquireChunk();
+
+    /// bbport: leaves deferred recording for this thread: what follows is recorded into the
+    /// command buffer at once (KickRecording() resumes the deferral). Used by a caller that
+    /// holds the raw command buffer, and by ReserveRecordData() when a payload cannot fit in a
+    /// chunk; keeping the caller's data alive until the immediate Record() reads it is then the
+    /// caller's job (it always is in the non-deferred path).
+    void BeginDirectRecording(void* caller) {
+        SyncRecording();
+        direct_mode = true;
+        direct_recordings.fetch_add(1, std::memory_order_relaxed);
+        TraceDirectRecording(caller);
+    }
 
     void RecorderThread(std::stop_token stoken);
 
