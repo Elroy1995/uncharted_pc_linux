@@ -115,6 +115,21 @@ sudo pacman -S clang cmake ninja pkgconf git python3 \
 (On Arch, replace `vulkan-radeon` with `vulkan-intel` or `nvidia-utils` as needed. There is no
 official `vulkan-memory-allocator` package; the vendored header is used.)
 
+### NixOS and other Nix systems
+
+The repository carries a shell with every dependency, for the build and for the launcher:
+
+```sh
+nix-shell                                      # a shell with clang, SDL3, Vulkan, tkinter, Pillow...
+BB_LTO=OFF BB_PGO=off bash build.sh            # builds out/bb-probe and out/gpu/libbbgpu.so
+python3 launcher/uncharted_launcher.py         # the launcher (Tk) in the same shell
+```
+
+`shell.nix` brings clang (CMake uses it for the probe and the GPU library), gcc (the probe build
+picks it up, including from `/nix/store`), the Python packages the launcher needs (tkinter,
+Pillow) and the GPU library dependencies. If an attribute has a different name in your nixpkgs,
+adjust `shell.nix`; nothing else in the port is NixOS-specific.
+
 ## Build
 
 ```sh
