@@ -1,0 +1,31 @@
+name: Build Linux
+on: workflow_dispatch
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config git python3 \
+            libvulkan-dev vulkan-tools libsdl3-dev libfmt-dev libboost-dev libtsl-robin-map-dev \
+            libxxhash-dev libzydis-dev libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
+            libswresample-dev libprotobuf-dev protobuf-compiler nlohmann-json3-dev libssl-dev zlib1g-dev \
+            libminiupnpc-dev libx11-dev glslang-tools spirv-headers libvulkan-memory-allocator-dev \
+            mesa-vulkan-drivers python3-tk python3-pil
+
+      - name: Build
+        run: BB_LTO=OFF BB_PGO=off bash build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uncharted-linux-build
+          path: |
+            out/bb-probe
+            out/gpu/libbbgpu.so
+            out/gpu-build.log
