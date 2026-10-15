@@ -34,6 +34,12 @@ jobs:
           cmake -S /tmp/robin-map -B /tmp/robin-map/build -DCMAKE_INSTALL_PREFIX=/usr
           cmake --install /tmp/robin-map/build
 
+      - name: Diagnose protobuf
+        run: |
+          dpkg -l | grep -i -E "protobuf|absl" || echo "no protobuf/absl packages installed"
+          find / \( -iname 'protobuf-config.cmake' -o -iname 'protobufconfig.cmake' \) 2>/dev/null || true
+          protoc --version || true
+
       - name: Build
         run: BB_LTO=OFF BB_PGO=off bash build.sh
 
@@ -42,6 +48,3 @@ jobs:
         with:
           name: uncharted-linux-build
           path: |
-            out/bb-probe
-            out/gpu/libbbgpu.so
-            out/gpu-build.log
