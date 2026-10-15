@@ -28,20 +28,31 @@ jobs:
           done
           echo "MISSING PACKAGES:$missing"
 
-      - name: Install protobuf (strict)
-        run: |
-          apt-get install -y libprotobuf-dev protobuf-compiler
-          protoc --version
-          dpkg -L libprotobuf-dev | grep -i cmake || echo "NO CMAKE FILES IN libprotobuf-dev"
-
       - name: Build robin-map from source
         run: |
           git clone --depth 1 --branch v1.3.0 https://github.com/Tessil/robin-map.git /tmp/robin-map
           cmake -S /tmp/robin-map -B /tmp/robin-map/build -DCMAKE_INSTALL_PREFIX=/usr
           cmake --install /tmp/robin-map/build
 
+      - name: Build protobuf from source
+        run: |
+          git clone --depth 1 --branch v21.12 https://github.com/protocolbuffers/protobuf.git /tmp/protobuf
+          cmake -S /tmp/protobuf -B /tmp/protobuf/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/opt/protobuf \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -Dprotobuf_BUILD_TESTS=OFF \
+            -Dprotobuf_BUILD_SHARED_LIBS=OFF
+          cmake --build /tmp/protobuf/build
+          cmake --install /tmp/protobuf/build
+          find /opt/protobuf -iname 'protobuf-config.cmake'
+          echo "CMAKE_PREFIX_PATH=/opt/protobuf" >> "$GITHUB_ENV"
+          echo "/opt/protobuf/bin" >> "$GITHUB_PATH"
+
       - name: Build
-        run: BB_LTO=OFF BB_PGO=off bash build.sh
+        run: |
+          protoc --version
+          BB_LTO=OFF BB_PGO=off bash build.sh
 
       - name: Upload artifact
         if: always()
