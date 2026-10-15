@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Launcher for the Windows port of Uncharted: The Nathan Drake Collection (Tkinter).
+"""Launcher for Uncharted: The Nathan Drake Collection (Tkinter).
 
 Chooses the game folder, which of the three games to start, the display and console options,
-and runs run.py with them as environment variables. Launcher options live in
-%APPDATA%/uncharted-launcher/settings.json.
+and runs the game with them as environment variables: run.py (bb-probe.exe) on Windows, this
+port's own runner run_uncharted.sh on Linux. Launcher options live next to the port's own files
+(<port>/settings.json, beside bbport.ini and input.ini), so the folder stays self-contained.
 
 Frozen with PyInstaller the same Uncharted.exe also runs the game without the window
 (`--play`), run.py (`--run`) and the preparation scripts (`--script`), so a packaged port
@@ -18,6 +19,7 @@ import queue
 import re
 import runpy
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -27,14 +29,21 @@ import urllib.request
 import webbrowser
 import zipfile
 
+IS_WINDOWS = os.name == 'nt'
 FROZEN = getattr(sys, 'frozen', False)
 PORT_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent.parent
+# The Linux port starts the games through its own runner; run.py builds Windows executables
+# (it looks for bb-probe.exe and SDL3.dll).
+RUNNER = PORT_DIR / 'run_uncharted.sh'
 sys.path.insert(0, str(PORT_DIR / 'scripts'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 DATA_DIR = Path(os.environ.get('BB_DATA_DIR', PORT_DIR))
-CONFIG_DIR = Path(os.environ.get('APPDATA', Path.home())) / 'uncharted-launcher'
+# The launcher's settings travel with the port (next to bbport.ini and input.ini), not in
+# %APPDATA% or ~/.config: a copied or moved folder keeps its options.
+CONFIG_DIR = DATA_DIR
 CONFIG_FILE = CONFIG_DIR / 'settings.json'
 NAME = 'Uncharted'
+WORD = 'Windows' if IS_WINDOWS else 'Linux'
 AUTHOR = 'SuperMedo'
 # This build; GitHub release tags are v<VERSION> (their digits are compared).
 VERSION = '0.3.1'
@@ -42,7 +51,7 @@ RELEASES_API = 'https://api.github.com/repos/Supermedo/uncharted_pc/releases/lat
 RELEASES_PAGE = 'https://github.com/Supermedo/uncharted_pc/releases/latest'
 UPDATE_DIR = Path(tempfile.gettempdir()) / 'uncharted-update'
 # Never copied over an installation by an update (the package does not hold them either).
-USER_FILES = ('user', 'out', 'art', 'bbport.ini', 'input.ini', 'last_run.log')
+USER_FILES = ('user', 'out', 'art', 'bbport.ini', 'input.ini', 'settings.json', 'last_run.log')
 MAX_LOG_LINES = 6000
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
@@ -84,16 +93,17 @@ FRAME_GENERATION = [('off', 'Off'), ('fsr3', 'AMD FSR 3 Frame Generation (any GP
 FRAME_GEN_MULTIPLIERS = [('2', '2× (one generated frame)'), ('3', '3× (DLSS on GeForce RTX 50)'),
                          ('4', '4× (DLSS on GeForce RTX 50)')]
 # Controls (input.ini, read by the game: src/runtime_pad.c). Actions with their PS4 names, the
-# default keys ("A|B": two bindings) and the default controller buttons (SDL names).
+# default keys ("A|B": two bindings) and the default controller buttons (SDL names). The default
+# keys are the inFAMOUS mapping from shadPS4 (CUSA00223.ini, which is what the game uses there).
 BUTTON_ACTIONS = [
-    ('cross', 'Cross ✕', 'Space', 'a'), ('circle', 'Circle ○', 'C', 'b'),
-    ('square', 'Square □', 'F', 'x'), ('triangle', 'Triangle △', 'E', 'y'),
-    ('l1', 'L1', 'Q', 'leftshoulder'), ('r1', 'R1', 'G', 'rightshoulder'),
-    ('l2', 'L2 (aim)', 'Mouse Right', 'lefttrigger'), ('r2', 'R2 (fire)', 'Mouse Left', 'righttrigger'),
-    ('l3', 'L3', 'Left Shift', 'leftstick'), ('r3', 'R3', 'V', 'rightstick'),
-    ('options', 'Options', 'Escape|Return', 'start'), ('touchpad', 'Touchpad', 'Tab', 'back'),
+    ('cross', 'Cross ✕', 'Space', 'a'), ('circle', 'Circle ○', 'Left Shift', 'b'),
+    ('square', 'Square □', 'F', 'x'), ('triangle', 'Triangle △', 'R', 'y'),
+    ('l1', 'L1', 'Q', 'leftshoulder'), ('r1', 'R1', 'E', 'rightshoulder'),
+    ('l2', 'L2 (aim)', 'X|Mouse Right', 'lefttrigger'), ('r2', 'R2 (fire)', 'C|Mouse Left', 'righttrigger'),
+    ('l3', 'L3', '1', 'leftstick'), ('r3', 'R3', '2', 'rightstick'),
+    ('options', 'Options', 'Return|Escape', 'start'), ('touchpad', 'Touchpad', 'Tab', 'back'),
     ('up', 'D-pad up', 'Up', 'dpup'), ('down', 'D-pad down', 'Down', 'dpdown'),
-    ('left', 'D-pad left', 'Left|Wheel Up', 'dpleft'), ('right', 'D-pad right', 'Right|Wheel Down', 'dpright'),
+    ('left', 'D-pad left', 'Left', 'dpleft'), ('right', 'D-pad right', 'Right', 'dpright'),
 ]
 STICK_ACTIONS = [
     ('ls_up', 'Move forward', 'W'), ('ls_down', 'Move back', 'S'),
@@ -112,7 +122,7 @@ PAD_BUTTONS = [('a', 'A / Cross'), ('b', 'B / Circle'), ('x', 'X / Square'), ('y
                ('dpright', 'D-pad right'), ('misc1', 'Share / Mic (misc)'), ('paddle1', 'Paddle 1'),
                ('paddle2', 'Paddle 2'), ('paddle3', 'Paddle 3'), ('paddle4', 'Paddle 4'),
                ('none', 'Not assigned')]
-MOUSE_SENSITIVITY = [('0.25', '0.25'), ('0.5', '0.5'), ('0.75', '0.75'), ('1.0', '1.0 (default)'),
+MOUSE_SENSITIVITY = [('0.25', '0.25'), ('0.5', '0.5'), ('0.75', '0.75'), ('1.0', '1.0'),
                      ('1.25', '1.25'), ('1.5', '1.5'), ('2.0', '2.0'), ('2.5', '2.5'), ('3.0', '3.0'),
                      ('4.0', '4.0')]
 # Tk key names → SDL key names (letters and digits map to themselves, upper case).
@@ -137,7 +147,7 @@ APP_DEFAULTS = {'game_dir': '', 'user_dir': '', 'start': 'u1', 'language': '1', 
                 'window_size': '1920x1080', 'scaler': 'fsr1', 'sharpening': '500',
                 'anti_aliasing': 'off', 'aa_sharpness': '0.2', 'frame_generation': 'off',
                 'frame_gen_multiplier': '2', 'extra_env': '', 'close_on_play': False,
-                'mouse_look': True, 'mouse_sensitivity': '1.0', 'mouse_invert_y': False,
+                'mouse_look': True, 'mouse_sensitivity': '3.0', 'mouse_invert_y': False,
                 'pad_invert_y': False, 'key_bindings': {}, 'pad_bindings': {}, 'check_updates': True}
 
 
@@ -151,6 +161,8 @@ def _(text):
 
 def attach_stdio():
     """A windowed executable starts without sys.stdout; inherited pipes or a console still exist."""
+    if not IS_WINDOWS:  # elsewhere the standard streams are always there
+        return
     import msvcrt
     for name, std in (('stdout', -11), ('stderr', -12)):
         if getattr(sys, name) is not None:
@@ -167,7 +179,7 @@ def attach_stdio():
 
 
 def run_role(argv):
-    """--run [args]: run.py; --script <file> [args]: a preparation script. Returns an exit code."""
+    """--run [args]: the game runner; --script <file> [args]: a script. Returns an exit code."""
     attach_stdio()
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -176,9 +188,15 @@ def run_role(argv):
             pass
     if argv[0] == '--script':
         path, sys.argv = argv[1], argv[1:]
-    else:
+    elif IS_WINDOWS:
         path = str(PORT_DIR / 'run.py')
         sys.argv = [path, *argv[1:]]
+    else:  # Linux: the shell runner builds if needed, starts the game and follows LoadExec
+        try:
+            return subprocess.call(['bash', str(RUNNER), *argv[1:]], cwd=PORT_DIR)
+        except OSError as error:
+            print(f'Could not run {RUNNER}: {error}', file=sys.stderr)
+            return 1
     try:
         runpy.run_path(path, run_name='__main__')
     except SystemExit as stop:
@@ -187,7 +205,16 @@ def run_role(argv):
 
 
 def run_command():
-    return [sys.executable, '--run'] if FROZEN else [sys.executable, str(PORT_DIR / 'run.py')]
+    """What starts a game, with the launcher's settings in the environment."""
+    if IS_WINDOWS:
+        return [sys.executable, '--run'] if FROZEN else [sys.executable, str(PORT_DIR / 'run.py')]
+    return ['bash', str(RUNNER)]
+
+
+def start_options():
+    """Popen keyword arguments: on Linux the runner leads its own process group, so Stop ends it,
+    the game, the next game of the collection and an in-game restart all at once."""
+    return {} if IS_WINDOWS else {'start_new_session': True}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -276,7 +303,7 @@ def write_input_ini(s):
     pad = {**DEFAULT_PAD, **(s.get('pad_bindings') or {})}
     lines = ['# Uncharted controls (written by the launcher, Controls page)',
              f"mouse_look={1 if s.get('mouse_look', True) else 0}",
-             f"mouse_sensitivity={s.get('mouse_sensitivity') or '1.0'}",
+             f"mouse_sensitivity={s.get('mouse_sensitivity') or '3.0'}",
              f"mouse_invert_y={1 if s.get('mouse_invert_y') else 0}",
              f"pad_invert_y={1 if s.get('pad_invert_y') else 0}"]
     lines += [f'key.{action}={keys.get(action, "")}' for action in DEFAULT_KEYS]
@@ -322,6 +349,15 @@ def game_environment(s, start=None):
     return env
 
 
+def open_native(target):
+    """Hand a path or a URL to the desktop (Explorer on Windows, xdg-open elsewhere)."""
+    if IS_WINDOWS:
+        os.startfile(str(target))
+    else:
+        subprocess.Popen(['xdg-open', str(target)], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+
+
 # ---------------------------------------------------------------------------------------------
 # Surfaces: near-black base, raised panels, Uncharted gold accent.
 
@@ -351,7 +387,7 @@ class Launcher:
         self.card_hot = None
         self.info = None
         self.update_box = None
-        root.title(f'{NAME} — The Nathan Drake Collection for Windows · by {AUTHOR}')
+        root.title(f'{NAME} — The Nathan Drake Collection for {WORD} · by {AUTHOR}')
         root.configure(bg=BG)
         self.dpi = root.winfo_fpixels('1i') / 96.0
         root.geometry(f'{self.px(1180)}x{self.px(860)}')
@@ -363,16 +399,26 @@ class Launcher:
         self.show('play')
         root.protocol('WM_DELETE_WINDOW', self.close)
         root.after(100, self.drain_output)
-        if self.app.get('check_updates', True):
+        if IS_WINDOWS and self.app.get('check_updates', True):
             threading.Thread(target=self.check_update, daemon=True).start()
 
     def px(self, size):
         return int(size * self.dpi)
 
     def set_icon(self):
-        try:
-            self.root.iconbitmap(default=str(PORT_DIR / 'launcher' / 'uncharted.ico'))
-        except self.tk.TclError:
+        if IS_WINDOWS:
+            try:
+                self.root.iconbitmap(default=str(PORT_DIR / 'launcher' / 'uncharted.ico'))
+            except self.tk.TclError:
+                pass
+            return
+        try:  # Tk cannot read a .ico here; the box art through PIL gives the window an icon
+            from PIL import ImageTk
+            import uncharted_art
+            art = uncharted_art.load_art('u1.jpg')
+            if art is not None:
+                self.root.iconphoto(True, ImageTk.PhotoImage(art))
+        except Exception:
             pass
 
     def load_fonts(self):
@@ -389,6 +435,11 @@ class Launcher:
                     pass
         if not font_path('Cinzel-Bold.ttf'):
             self.brand_family = 'Georgia'
+        import tkinter.font as tkfont
+        families = set(tkfont.families(self.root))
+        if self.brand_family not in families:  # Linux: the bundled TTF is not installed system-wide
+            self.brand_family = next((f for f in ('Cinzel', 'Georgia', 'DejaVu Serif', 'Liberation Serif',
+                                                 'Noto Serif', 'serif') if f in families), self.brand_family)
         self.font_brand_xl = (self.brand_family, 24, 'bold')
         self.font_brand_lg = (self.brand_family, 18, 'bold')
         self.font_brand_md = (self.brand_family, 13, 'bold')
@@ -400,8 +451,6 @@ class Launcher:
         self.font_play = ('Segoe UI Semibold', 13)
         self.font_title = ('Segoe UI Semibold', 22)
         self.font_card = ('Segoe UI Semibold', 9)
-        import tkinter.font as tkfont
-        families = set(tkfont.families(self.root))
         icons = next((f for f in ('Segoe Fluent Icons', 'Segoe MDL2 Assets') if f in families), None)
         self.font_icon = (icons, 13) if icons else None
         self.font_icon_sm = (icons, 11) if icons else None
@@ -636,6 +685,15 @@ class Launcher:
         side.pack(side='left', fill='y')
         side.pack_propagate(False)
         brand_wrap = side_w - 36
+        # The wordmark has to fit the sidebar even when the bundled Cinzel face is not installed
+        # (Linux): take the largest size of the brand face that keeps 'UNCHARTED' inside it.
+        import tkinter.font as tkfont
+        brand = tkfont.Font(root=self.root, family=self.brand_family, size=18, weight='bold')
+        size = 18
+        while size > 11 and brand.measure('UNCHARTED') > brand_wrap:
+            size -= 1
+            brand.configure(size=size)
+        self.font_brand_lg = (self.brand_family, size, 'bold')
         tk.Label(side, text='UNCHARTED', bg=BG, fg=GOLD, font=self.font_brand_lg, anchor='w').pack(
             anchor='w', padx=18, pady=(28, 0))
         tk.Label(side, text='NATHAN DRAKE', bg=BG, fg=MUTED, font=self.font_brand_sm, anchor='w').pack(
@@ -674,7 +732,8 @@ class Launcher:
             self.nav[name], self.nav_pills[name], self.nav_marks[name] = item, pill, mark
         tk.Frame(side, bg=BG).pack(fill='both', expand=True)
         self.side = side
-        self.side_note = tk.Label(side, text=_('Native port: the original PS4 game code runs directly on Windows.'),
+        self.side_note = tk.Label(side, text=_('Native port: the original PS4 game code runs directly on {}.'
+                                               ).format(WORD),
                                   bg=BG, fg=MUTED, font=('Segoe UI', 9), justify='left',
                                   wraplength=side_w - 36)
         self.side_note.pack(anchor='w', padx=18, pady=(0, 18))
@@ -782,8 +841,9 @@ class Launcher:
         fullscreen = tk.Label(row, text=_('Fullscreen'), bg=SURFACE, fg=TEXT, font=self.font_ui, cursor='hand2')
         fullscreen.pack(side='left', padx=(self.px(10), 0))
         fullscreen.bind('<Button-1>', lambda _e: self.var('fullscreen').set(not self.var('fullscreen').get()))
-        self.pill(row, _('Add to Steam'), self.add_to_steam, background=SURFACE, padding=(14, 6)).pack(
-            side='left', padx=(self.px(24), 0))
+        if IS_WINDOWS:  # it writes a shortcut into the Windows Steam client
+            self.pill(row, _('Add to Steam'), self.add_to_steam, background=SURFACE, padding=(14, 6)).pack(
+                side='left', padx=(self.px(24), 0))
         self.pill(row, _('Desktop shortcut'), self.shortcut, background=SURFACE, padding=(14, 6)).pack(
             side='left', padx=(self.px(8), 0))
         self.ready = tk.Label(shell, text='', bg=SURFACE, fg=MUTED, font=self.font_ui_sm,
@@ -1158,15 +1218,17 @@ class Launcher:
         self.pill(holder, _('Clear shader cache'), self.clear_cache).pack(side='left')
         self.pill(holder, _('Open the saves folder'),
                   lambda: self.open_path(self.var('user_dir').get(), 'user_dir')).pack(side='left', padx=(8, 0))
-        self.section(f, _('Updates'))
-        self.check(f, 'check_updates', _('Look for a new version when the launcher starts'))
-        card = self.target(f)
-        holder = self.tk.Frame(card, bg=CARD)
-        holder.grid(row=self.next_row(card), column=0, columnspan=2, sticky='w', pady=(12, 0))
-        self.pill(holder, _('Check for updates'),
-                  lambda: threading.Thread(target=self.check_update, args=(True,), daemon=True).start()
-                  ).pack(side='left')
-        self.pill(holder, _('Releases page'), lambda: webbrowser.open(RELEASES_PAGE)).pack(side='left', padx=(8, 0))
+        if IS_WINDOWS:  # the releases are Windows builds; here the port comes from the source tree
+            self.section(f, _('Updates'))
+            self.check(f, 'check_updates', _('Look for a new version when the launcher starts'))
+            card = self.target(f)
+            holder = self.tk.Frame(card, bg=CARD)
+            holder.grid(row=self.next_row(card), column=0, columnspan=2, sticky='w', pady=(12, 0))
+            self.pill(holder, _('Check for updates'),
+                      lambda: threading.Thread(target=self.check_update, args=(True,), daemon=True).start()
+                      ).pack(side='left')
+            self.pill(holder, _('Releases page'), lambda: webbrowser.open(RELEASES_PAGE)).pack(
+                side='left', padx=(8, 0))
 
     def build_log(self):
         tk = self.tk
@@ -1238,7 +1300,8 @@ class Launcher:
         try:
             self.process = subprocess.Popen(run_command(), cwd=PORT_DIR, env=game_environment(self.app),
                                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                            stderr=subprocess.STDOUT, creationflags=NO_WINDOW)
+                                            stderr=subprocess.STDOUT, creationflags=NO_WINDOW,
+                                            **start_options())
         except OSError as error:
             self.append(_('Could not start: {}').format(error) + '\n')
             self.process = None
@@ -1295,7 +1358,8 @@ class Launcher:
                     stripped = item.strip()
                     if stripped.startswith(('STOP:', 'ERROR', 'GPU crash: the', 'Fault:')) or \
                             ('failed' in stripped and not stripped.startswith('GPU [')) or \
-                            stripped.startswith(('No eboot.bin', 'Set BB_GAME_DIR', 'bb-probe.exe not found')):
+                            stripped.startswith(('No eboot.bin', 'Set BB_GAME_DIR', 'bb-probe.exe not found',
+                                                 'FATAL:')):
                         if not self.last_problem or stripped.startswith(('STOP:', 'GPU crash')):
                             self.last_problem = stripped
                     if 'Entering original x86-64 code' in item:
@@ -1338,7 +1402,7 @@ class Launcher:
         path = Path(path or DATA_DIR)
         if not path.exists():
             path.mkdir(parents=True, exist_ok=True)
-        os.startfile(str(path))
+        open_native(path)
 
     # ---- updates -------------------------------------------------------------------------------
     def check_update(self, manual=False):
@@ -1436,6 +1500,9 @@ class Launcher:
 
     def shortcut(self):
         """Uncharted.lnk on the desktop."""
+        if not IS_WINDOWS:
+            self.shortcut_linux()
+            return
         if FROZEN:
             target, arguments, icon = sys.executable, '', f'{sys.executable},0'
         else:
@@ -1455,6 +1522,9 @@ class Launcher:
 
     def add_to_steam(self):
         """The collection in the Steam library (a non-Steam game that starts Uncharted.exe --play)."""
+        if not IS_WINDOWS:  # it edits the Windows Steam client's shortcuts.vdf
+            self.messagebox.showinfo(NAME, _('Adding the collection to Steam needs Windows.'))
+            return
         import bbport_steam
         steam = bbport_steam.steam_folder()
         configs = bbport_steam.user_configs(steam) if steam else []
@@ -1497,9 +1567,33 @@ class Launcher:
             self.messagebox.showerror(NAME, _('Could not add the game to Steam: {}').format(error))
             return
         if restart:
-            os.startfile('steam://open/games')
+            open_native('steam://open/games')
         self.messagebox.showinfo(NAME, _('The collection is in your Steam library. It starts with the settings '
                                          'saved in this launcher.'))
+
+    def shortcut_linux(self):
+        """The Linux equivalent: an entry in the applications menu, as the other launchers."""
+        command = (f'"{sys.executable}"' if FROZEN
+                   else f'"{sys.executable}" "{Path(__file__).resolve()}"')
+        entry = ('[Desktop Entry]\n'
+                 'Type=Application\n'
+                 'Categories=Game;\n'
+                 f'Name={NAME}\n'
+                 'Comment=The Nathan Drake Collection\n'
+                 f'Path={PORT_DIR}\n'
+                 f'Exec={command}\n'
+                 'Icon=applications-games\n'
+                 'Terminal=false\n')
+        target = (Path(os.environ.get('XDG_DATA_HOME') or Path.home() / '.local' / 'share')
+                  / 'applications' / 'uncharted-launcher.desktop')
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(entry, encoding='utf-8')
+            target.chmod(0o755)
+        except OSError as error:
+            self.messagebox.showerror(NAME, _('Could not create the shortcut: {}').format(error))
+            return
+        self.messagebox.showinfo(NAME, _('Shortcut in the applications menu: {}').format(target))
 
     def close(self):
         try:
@@ -1510,10 +1604,14 @@ class Launcher:
 
 
 class GameJob:
-    """A Windows job holding run.py and everything it starts (the game, the next game of the
-    collection, an in-game restart), so Stop ends all of them."""
+    """Everything the runner starts (the game, the next game of the collection, an in-game
+    restart), so Stop ends all of them: a Windows job object, a process group on Linux."""
 
     def __init__(self, process):
+        self.handle = None
+        self.pid = process.pid
+        if not IS_WINDOWS:
+            return
         kernel32 = ctypes.windll.kernel32
         kernel32.CreateJobObjectW.restype = ctypes.c_void_p
         self.handle = kernel32.CreateJobObjectW(None, None)
@@ -1521,6 +1619,12 @@ class GameJob:
             kernel32.AssignProcessToJobObject(ctypes.c_void_p(self.handle), ctypes.c_void_p(int(process._handle)))
 
     def terminate(self):
+        if not IS_WINDOWS:  # the runner leads its own process group (start_options)
+            try:
+                os.killpg(self.pid, signal.SIGTERM)
+            except OSError:
+                pass
+            return
         if self.handle:
             ctypes.windll.kernel32.TerminateJobObject(ctypes.c_void_p(self.handle), 1)
 
@@ -1581,7 +1685,8 @@ def play_without_window(settings):
     with open(log_dir / 'last_run.log', 'w', encoding='utf-8', buffering=1) as log:
         process = subprocess.Popen(run_command(), cwd=PORT_DIR, env=game_environment(settings),
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, creationflags=NO_WINDOW)
+                                   stderr=subprocess.STDOUT, creationflags=NO_WINDOW,
+                                   **start_options())
         for raw in iter(process.stdout.readline, b''):
             text = raw.decode('utf-8', errors='replace')
             log.write(text)
